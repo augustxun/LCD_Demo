@@ -29,6 +29,7 @@
 
 #define SPI_FLAG 1  // SPI完成的FLAG
 #define DATA_READY_FLAG 2  // 数据准备好的FLAG
+#define FILTER_COEFFICIENT 0.1f // Adjust this value as needed
 
 // #define SCALING_FACTOR ()  // 陀螺仪灵敏度设置
 
@@ -45,7 +46,8 @@
 // EventFlags object declaration
 EventFlags flags;
 
-SPI spi(PF_9, PF_8, PF_7, PC_1, use_gpio_ssel);  // 初始化SPI接口
+
+
 
 float32_t fft_input_x[WINDOW_SIZE * 2];  // 定义x轴FFT输入数组
 float32_t fft_input_y[WINDOW_SIZE * 2];  // 定义y轴FFT输入数组
@@ -61,7 +63,7 @@ void spi_cb(int event) {
 }
 
 // data ready callback function
-void data_ready_cb() {
+void data_cb() {
     flags.set(DATA_READY_FLAG);  // 设置数据准备好的flag
 }
 
@@ -70,36 +72,12 @@ void init_fft() {
 }
 
 void init_lcd() {
-    BSP_LCD_Init();  // 初始化LCD
-    BSP_LCD_LayerDefaultInit(1, LCD_FRAME_BUFFER);  // 初始化LCD层
-    BSP_LCD_SelectLayer(1);  // 选择LCD层
-    BSP_LCD_DisplayOn();  // 打开显示
-    BSP_LCD_Clear(LCD_COLOR_WHITE);  // 清屏为白色
-    BSP_LCD_SetBackColor(LCD_COLOR_WHITE);  // 设置白色背景色
-    BSP_LCD_SetTextColor(LCD_COLOR_BLACK);  // 设置黑色文字色
-    BSP_LCD_DisplayStringAt(0, LINE(0), (uint8_t *)"Tremor Detection Active", CENTER_MODE);  // 显示文字(Active)
+   LCD_DISCO_F429ZI lcd;  // 初始化LCD
+   lcd.SetBackColor(LCD_COLOR_WHITE);  // 设置白色背景色
+   lcd.SetTextColor(LCD_COLOR_BLACK);  // 设置黑色文字色
+   lcd.DisplayStringAt(0, LINE(3), (uint8_t *)"Detection Active", CENTER_MODE);  // 显示文字(Active)
 }
 
-void setup_spi_and_gyro() {
-    spi.format(8, 3);  // SPI格式
-    spi.frequency(1000000);  // SPI频率
-    
-    uint8_t write_buf[32], read_buf[32];  // 缓冲区
-    write_buf[0] = CTRL_REG1;  // 设置寄存器地址
-    write_buf[1] = CTRL_REG1_CONFIG;  // 设置寄存器配置
-    spi.transfer(write_buf, 2, read_buf, 2, spi_cb);  // 写入配置
-    
-    write_buf[0] = CTRL_REG4;  // 设置寄存器地址
-    write_buf[1] = CTRL_REG4_CONFIG;  // 设置寄存器配置
-    spi.transfer(write_buf, 2, read_buf, 2,spi_cb);  // 写入配置
-    
-    write_buf[0] = CTRL_REG3;  // 设置寄存器地址
-    write_buf[1] = CTRL_REG3_CONFIG;  // 设置寄存器配置
-    spi.transfer(write_buf, 2, read_buf, 2,spi_cb);  // 写入配置
-    
-    InterruptIn data_ready(PA_2);  // 接收来自陀螺仪的数据就绪sign
-    data_ready.rise(&data_ready_cb);  // 设置中断触发函数
-}
 
 /* //这是只分析x轴的分析方法
 void analyze_tremor(float32_t* fft_output, float& tremor_strength, bool& tremor_detected) {
@@ -124,7 +102,7 @@ void analyze_tremor(float32_t* fft_output_x, float32_t* fft_output_y, float32_t*
         float strength_y = sqrtf(fft_output_y[i] * fft_output_y[i]); // 计算y轴频率的强度
         float strength_z = sqrtf(fft_output_z[i] * fft_output_z[i]); // 计算z轴频率的强度
         float combined_strength = (strength_x + strength_y + strength_z) / 3;  // 使用平均值综合三个轴的强度
-        
+        printf("tremor:%4.5f\n",combined_strength);
         if (combined_strength > THRESHOLD) { // 检查强度是否超过阈值 (去抖)
             tremor_detected = true; // 超过则检测到震颤，改震颤检测状态为是
             tremor_strength = max(tremor_strength, combined_strength); // 更新最大震颤强度
@@ -148,29 +126,93 @@ void update_lcd_display(bool tremor_detected, float tremor_strength) {
     }
 }
 
-int main() {
-    init_lcd();  // 初始化LCD显示
-    init_fft();  // 初始化FFT
-    setup_spi_and_gyro();  // 设置SPI和陀螺仪
 
+
+int main() {
+    init_lcd();
+    //spi initialization
+    SPI spi(PF_9, PF_8, PF_7, PC_1, use_gpio_ssel);
+    uint8_t write_buf[32], read_buf[32];
+
+    //interrupt initialization
+    InterruptIn int2(PA_2, PullDown);
+    int2.rise(&data_cb);
+    
+    //spi format and frequency
+    spi.format(8, 3);
+    spi.frequency(1'000'000);
+
+    // Write to control registers --> spi transfer
+    write_buf[0] = CTRL_REG1;
+    write_buf[1] = CTRL_REG1_CONFIG;
+    spi.transfer(write_buf, 2, read_buf, 2, spi_cb);
+    flags.wait_all(SPI_FLAG);
+
+    write_buf[0] = CTRL_REG4;
+    write_buf[1] = CTRL_REG4_CONFIG;
+    spi.transfer(write_buf, 2, read_buf, 2, spi_cb);
+    flags.wait_all(SPI_FLAG);
+
+    write_buf[0] = CTRL_REG3;
+    write_buf[1] = CTRL_REG3_CONFIG;
+    spi.transfer(write_buf, 2, read_buf, 2, spi_cb);
+    flags.wait_all(SPI_FLAG);
+
+    write_buf[1] = 0xFF;
+
+    //(polling for\setting) data ready flag
+    if (!(flags.get() & DATA_READY_FLAG) && (int2.read() == 1)) {
+        flags.set(DATA_READY_FLAG);
+    }
+
+    // init_lcd();  // 初始化LCD显示
+    // init_fft();  // 初始化FFT
+
+    float filtered_gx = 0.0f, filtered_gy = 0.0f, filtered_gz = 0.0f;
     while (1) {
-        flags.wait_all(DATA_READY_FLAG);  // 等待数据准备好
+        int16_t raw_gx, raw_gy, raw_gz;
+        float gx, gy, gz;
+
         memset(fft_input_x, 0, sizeof(fft_input_x));  // 清空x轴FFT输入数组
         memset(fft_input_y, 0, sizeof(fft_input_y));  // 清空y轴FFT输入数组
         memset(fft_input_z, 0, sizeof(fft_input_z));  // 清空z轴FFT输入数组
         
+        flags.wait_all(DATA_READY_FLAG);
+        write_buf[0] = OUT_X_L | 0x80 | 0x40;
+
+        spi.transfer(write_buf, 7, read_buf, 7, spi_cb);
+        flags.wait_all(SPI_FLAG);
         for (int i = 0; i < WINDOW_SIZE; i++) {
-            flags.wait_all(SPI_FLAG);  // 等待SPI完成
-            uint8_t write_buf[1] = {OUT_X_L | 0x80}, read_buf[6];  // 设置读取命令和缓冲区
-            spi.transfer(write_buf, 1, read_buf, 6, spi_cb);  // 读取陀螺仪数据
+            // flags.wait_all(SPI_FLAG);  // 等待SPI完成
+            // uint8_t write_buf[1] = {OUT_X_L | 0x80}, read_buf[6];  // 设置读取命令和缓冲区
+            // spi.transfer(write_buf, 1, read_buf, 6, spi_cb);  // 读取陀螺仪数据
 
-            int16_t raw_x = (read_buf[1] << 8) | read_buf[0];  // 处理x轴数据
-            int16_t raw_y = (read_buf[3] << 8) | read_buf[2];  // 处理y轴数据
-            int16_t raw_z = (read_buf[5] << 8) | read_buf[4];  // 处理z轴数据
+            flags.wait_all(DATA_READY_FLAG);
+            write_buf[0] = OUT_X_L | 0x80 | 0x40;
 
-            fft_input_x[2 * i] = (float)raw_x * SCALING_FACTOR;  // 存储处理后的x轴数据
-            fft_input_y[2 * i] = (float)raw_y * SCALING_FACTOR;  // 存储处理后的y轴数据
-            fft_input_z[2 * i] = (float)raw_z * SCALING_FACTOR;  // 存储处理后的z轴数据
+            spi.transfer(write_buf, 7, read_buf, 7, spi_cb);
+            flags.wait_all(SPI_FLAG);
+
+            raw_gx = (((uint16_t)read_buf[2]) << 8) | ((uint16_t)read_buf[1]);
+            raw_gy = (((uint16_t)read_buf[4]) << 8) | ((uint16_t)read_buf[3]);
+            raw_gz = (((uint16_t)read_buf[6]) << 8) | ((uint16_t)read_buf[5]);
+            
+            gx = ((float)raw_gx) * SCALING_FACTOR;
+            gy = ((float)raw_gy) * SCALING_FACTOR;
+            gz = ((float)raw_gz) * SCALING_FACTOR;
+
+            filtered_gx = FILTER_COEFFICIENT * gx + (1 - FILTER_COEFFICIENT) * filtered_gx;
+            filtered_gy = FILTER_COEFFICIENT * gy + (1 - FILTER_COEFFICIENT) * filtered_gy;
+            filtered_gz = FILTER_COEFFICIENT * gz + (1 - FILTER_COEFFICIENT) * filtered_gz;
+
+            printf("RAW -> \t\tgx: %d \t gy: %d \t gz: %d\t\n", raw_gx, raw_gy, raw_gz);
+            printf(">x_axis_low:%4.5f\n", filtered_gx);
+            printf(">y_axis_low:%4.5f\n", filtered_gy);
+            printf(">z_axis_low:%4.5f\n", filtered_gz);
+
+            fft_input_x[2 * i] = (float)filtered_gx * SCALING_FACTOR;  // 存储处理后的x轴数据
+            fft_input_y[2 * i] = (float)filtered_gy * SCALING_FACTOR;  // 存储处理后的y轴数据
+            fft_input_z[2 * i] = (float)filtered_gz * SCALING_FACTOR;  // 存储处理后的z轴数据
         }
 
         arm_rfft_fast_f32(&s, fft_input_x, fft_output_x, 0);  // 对x轴数据进行FFT
