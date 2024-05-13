@@ -169,62 +169,57 @@ int main() {
     // init_fft();  // 初始化FFT
 
     float filtered_gx = 0.0f, filtered_gy = 0.0f, filtered_gz = 0.0f;
+    int cycle=0;
     while (1) {
         int16_t raw_gx, raw_gy, raw_gz;
         float gx, gy, gz;
 
-        memset(fft_input_x, 0, sizeof(fft_input_x));  // 清空x轴FFT输入数组
-        memset(fft_input_y, 0, sizeof(fft_input_y));  // 清空y轴FFT输入数组
-        memset(fft_input_z, 0, sizeof(fft_input_z));  // 清空z轴FFT输入数组
-        
         flags.wait_all(DATA_READY_FLAG);
         write_buf[0] = OUT_X_L | 0x80 | 0x40;
 
         spi.transfer(write_buf, 7, read_buf, 7, spi_cb);
         flags.wait_all(SPI_FLAG);
-        for (int i = 0; i < WINDOW_SIZE; i++) {
-            // flags.wait_all(SPI_FLAG);  // 等待SPI完成
-            // uint8_t write_buf[1] = {OUT_X_L | 0x80}, read_buf[6];  // 设置读取命令和缓冲区
-            // spi.transfer(write_buf, 1, read_buf, 6, spi_cb);  // 读取陀螺仪数据
 
-            flags.wait_all(DATA_READY_FLAG);
-            write_buf[0] = OUT_X_L | 0x80 | 0x40;
+        // Process raw data
+        raw_gx = (((uint16_t)read_buf[2]) << 8) | ((uint16_t)read_buf[1]);
+        raw_gy = (((uint16_t)read_buf[4]) << 8) | ((uint16_t)read_buf[3]);
+        raw_gz = (((uint16_t)read_buf[6]) << 8) | ((uint16_t)read_buf[5]);
 
-            spi.transfer(write_buf, 7, read_buf, 7, spi_cb);
-            flags.wait_all(SPI_FLAG);
+        gx = ((float)raw_gx) * SCALING_FACTOR;
+        gy = ((float)raw_gy) * SCALING_FACTOR;
+        gz = ((float)raw_gz) * SCALING_FACTOR;
 
-            raw_gx = (((uint16_t)read_buf[2]) << 8) | ((uint16_t)read_buf[1]);
-            raw_gy = (((uint16_t)read_buf[4]) << 8) | ((uint16_t)read_buf[3]);
-            raw_gz = (((uint16_t)read_buf[6]) << 8) | ((uint16_t)read_buf[5]);
-            
-            gx = ((float)raw_gx) * SCALING_FACTOR;
-            gy = ((float)raw_gy) * SCALING_FACTOR;
-            gz = ((float)raw_gz) * SCALING_FACTOR;
+        filtered_gx = FILTER_COEFFICIENT * gx + (1 - FILTER_COEFFICIENT) * filtered_gx;
+        filtered_gy = FILTER_COEFFICIENT * gy + (1 - FILTER_COEFFICIENT) * filtered_gy;
+        filtered_gz = FILTER_COEFFICIENT * gz + (1 - FILTER_COEFFICIENT) * filtered_gz;
 
-            filtered_gx = FILTER_COEFFICIENT * gx + (1 - FILTER_COEFFICIENT) * filtered_gx;
-            filtered_gy = FILTER_COEFFICIENT * gy + (1 - FILTER_COEFFICIENT) * filtered_gy;
-            filtered_gz = FILTER_COEFFICIENT * gz + (1 - FILTER_COEFFICIENT) * filtered_gz;
+        // printf("RAW -> \t\tgx: %d \t gy: %d \t gz: %d\t\n", raw_gx, raw_gy, raw_gz);
 
-            printf("RAW -> \t\tgx: %d \t gy: %d \t gz: %d\t\n", raw_gx, raw_gy, raw_gz);
-            printf(">x_axis_low:%4.5f\n", filtered_gx);
-            printf(">y_axis_low:%4.5f\n", filtered_gy);
-            printf(">z_axis_low:%4.5f\n", filtered_gz);
+        printf(">x_axis_low:%4.5f\n", filtered_gx);
+        printf(">y_axis_low:%4.5f\n", filtered_gy);
+        printf(">z_axis_low:%4.5f\n", filtered_gz);
+        printf("%d\n", cycle);
 
-            fft_input_x[2 * i] = (float)filtered_gx * SCALING_FACTOR;  // 存储处理后的x轴数据
-            fft_input_y[2 * i] = (float)filtered_gy * SCALING_FACTOR;  // 存储处理后的y轴数据
-            fft_input_z[2 * i] = (float)filtered_gz * SCALING_FACTOR;  // 存储处理后的z轴数据
+        fft_input_x[2 * cycle] = (float)filtered_gx * SCALING_FACTOR;  // 存储处理后的x轴数据
+        fft_input_y[2 * cycle] = (float)filtered_gy * SCALING_FACTOR;  // 存储处理后的y轴数据
+        fft_input_z[2 * cycle] = (float)filtered_gz * SCALING_FACTOR;  // 存储处理后的z轴数据
+        
+        if (cycle==255) {
+            printf("finish reading");
+            // arm_rfft_fast_f32(&s, fft_input_x, fft_output_x, 0);  // 对x轴数据进行FFT
+            // arm_rfft_fast_f32(&s, fft_input_y, fft_output_y, 0);  // 对y轴数据进行FFT
+            // arm_rfft_fast_f32(&s, fft_input_z, fft_output_z, 0);  // 对z轴数据进行FFT
+
+            // float tremor_strength;
+            // bool tremor_detected;
+            // //analyze_tremor(fft_output_x, tremor_strength, tremor_detected); // 这是只分析x轴的分析方法
+            // analyze_tremor(fft_output_x, fft_output_y, fft_output_z, tremor_strength, tremor_detected);  // 调用函数综合分析三个轴的震颤
+            // update_lcd_display(tremor_detected, tremor_strength);  // 调用函数更新显示
+
+            // ThisThread::sleep_for(1000);  // 每秒更新一次
+            cycle = 0;
+            continue;
         }
-
-        arm_rfft_fast_f32(&s, fft_input_x, fft_output_x, 0);  // 对x轴数据进行FFT
-        arm_rfft_fast_f32(&s, fft_input_y, fft_output_y, 0);  // 对y轴数据进行FFT
-        arm_rfft_fast_f32(&s, fft_input_z, fft_output_z, 0);  // 对z轴数据进行FFT
-
-        float tremor_strength;
-        bool tremor_detected;
-        //analyze_tremor(fft_output_x, tremor_strength, tremor_detected); // 这是只分析x轴的分析方法
-        analyze_tremor(fft_output_x, fft_output_y, fft_output_z, tremor_strength, tremor_detected);  // 调用函数综合分析三个轴的震颤
-        update_lcd_display(tremor_detected, tremor_strength);  // 调用函数更新显示
-
-        ThisThread::sleep_for(1000);  // 每秒更新一次
+        cycle++;
     }
 }
